@@ -41,6 +41,7 @@ HOT_QUERY_INTERVAL_SECONDS = 0.25
 HOT_WINDOW_SECONDS = 5.0
 
 AUTO_SUBMIT = {auto_submit}
+CROSS_STATION = {cross_station}
 
 SEAT_POSITION_PREFERENCES = []
 BERTH_PREFERENCE = {{"lower": 0, "middle": 0, "upper": 0}}
@@ -95,7 +96,18 @@ def main() -> int:
     parser.add_argument("--ticket-type", action="append", default=[],
                         help="乘车人票种 姓名:adult|student，可重复；默认用 12306 联系人类型")
     parser.add_argument("--no-auto-submit", action="store_true", help="只查票不自动下单")
+    parser.add_argument("--cross-station", action="store_true",
+                        help="启用跨站扩展：指定车次的直达没票时自动加买长备选（终点后移）")
+    parser.add_argument("--max-extend", type=int, default=5, help="跨站最多延伸站数 0-5（默认 5）")
+    parser.add_argument("--allow-short", action="store_true",
+                        help="同时允许买短（起点前移）；越站乘车需补票，高铁慎用")
     args = parser.parse_args()
+    if args.allow_short:
+        args.cross_station = True
+    if not 0 <= args.max_extend <= 5:
+        raise SystemExit("--max-extend 必须是 0-5")
+    cross_station = {"enable": args.cross_station, "max_extend": args.max_extend,
+                     "allow_short": args.allow_short}
 
     cart = [parse_item(t) for t in args.item]
     passengers = [p.strip() for p in args.passengers.replace("，", ",").split(",") if p.strip()]
@@ -125,6 +137,7 @@ def main() -> int:
         start_at=args.start_at,
         stop_at=args.stop_at,
         auto_submit="False" if args.no_auto_submit else "True",
+        cross_station=repr(cross_station),
     )
     out = Path(args.config_out)
     out.parent.mkdir(parents=True, exist_ok=True)

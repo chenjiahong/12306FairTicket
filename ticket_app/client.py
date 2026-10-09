@@ -344,6 +344,43 @@ class RailwayClient:
             logging.warning("余票查询失败: %s", last_error)
         return TicketQueryResult(False, [], last_error or "未取得有效余票响应")
 
+    def query_train_stops(
+        self, station_train_code: str, from_code: str, to_code: str,
+    ) -> List[Dict[str, str]]:
+        """Fetch a train's full stop list via the official czxx interface.
+
+        No login required.  ``station_train_code`` must be the full code from
+        the leftTicket ``train_no`` column (e.g. 240000G10102K); the short
+        code (e.g. G101) returns an empty list.  Failures return [] so the
+        caller can skip expansion instead of aborting the run.
+        """
+        try:
+            response = self.session.get(
+                f"{BASE_URL}/otn/czxx/queryByTrainNo",
+                params={
+                    "train_no": station_train_code,
+                    "from_station_telecode": from_code,
+                    "to_station_telecode": to_code,
+                    "depart_date": self.cfg.train_date,
+                },
+                timeout=self.cfg.request_timeout_seconds,
+            )
+            payload = response.json()
+        except Exception as exc:
+            logging.warning("经停站查询失败: %s", type(exc).__name__)
+            return []
+        node = payload.get("data") if isinstance(payload, dict) else None
+        stops = node.get("data") if isinstance(node, dict) else node
+        if not isinstance(stops, list):
+            return []
+        result: List[Dict[str, str]] = []
+        for stop in stops:
+            if isinstance(stop, dict):
+                name = str(stop.get("station_name", "")).strip()
+                if name:
+                    result.append({"station_name": name})
+        return result
+
     @staticmethod
     def _parse_tickets(results: List[str], station_map: Dict[str, str]) -> List[Dict[str, Any]]:
         tickets: List[Dict[str, Any]] = []

@@ -54,6 +54,21 @@ class PreparedPassengerSet:
 
 
 @dataclass(frozen=True)
+class CrossStationConfig:
+    """Cross-station expansion (买长乘短/买短乘长) for specific-train cart items.
+
+    Buy-long extends the destination forward along the train's stop list and is
+    safe (ride a shorter segment than ticketed).  Buy-short extends the origin
+    backward and is opt-in because riding beyond a ticketed segment is
+    restricted on high-speed trains.
+    """
+
+    enable: bool = False
+    max_extend: int = 2
+    allow_short: bool = False
+
+
+@dataclass(frozen=True)
 class ConnectionConfig:
     """Connection-only settings for login, passenger lookup and clock sync.
 
@@ -182,6 +197,7 @@ class AppConfig:
     config_path: Path
     passenger_ticket_types: Dict[str, str] = field(default_factory=dict)
     quiet_carriage_preference: bool = False
+    cross_station: CrossStationConfig = field(default_factory=CrossStationConfig)
 
     @property
     def seat_types(self) -> List[str]:
@@ -258,6 +274,7 @@ class AppConfig:
             config_path=config_path,
             passenger_ticket_types=passenger_ticket_types,
             quiet_carriage_preference=_as_bool(value("QUIET_CARRIAGE_PREFERENCE", False), "QUIET_CARRIAGE_PREFERENCE"),
+            cross_station=_parse_cross_station(value("CROSS_STATION", {})),
             cart_items=cart_items,
         )
         cfg.validate()
@@ -272,6 +289,11 @@ class AppConfig:
             "PASSENGER_NAMES": list(self.passenger_names),
             "PASSENGER_TICKET_TYPES": dict(self.passenger_ticket_types),
             "QUIET_CARRIAGE_PREFERENCE": self.quiet_carriage_preference,
+            "CROSS_STATION": {
+                "enable": self.cross_station.enable,
+                "max_extend": self.cross_station.max_extend,
+                "allow_short": self.cross_station.allow_short,
+            },
             "START_AT": self.start_at,
             "STOP_AT": self.stop_at,
             "PRE_QUERY_SECONDS": self.pre_query_seconds,
@@ -408,6 +430,21 @@ def _as_bool(value: Any, name: str) -> bool:
         if normalized in {"false", "no", "n", "0", "off", ""}:
             return False
     raise AppError(f"{name} 必须是布尔值")
+
+
+def _parse_cross_station(value: Any) -> CrossStationConfig:
+    if value is None:
+        return CrossStationConfig()
+    if isinstance(value, bool):
+        return CrossStationConfig(enable=value)
+    if not isinstance(value, Mapping):
+        raise AppError("CROSS_STATION 必须是布尔值或对象")
+    enable = _as_bool(value.get("enable", False), "CROSS_STATION.enable")
+    raw_max = value.get("max_extend", 2)
+    if isinstance(raw_max, bool) or not isinstance(raw_max, int) or not 0 <= raw_max <= 5:
+        raise AppError("CROSS_STATION.max_extend 必须是 0-5 的整数")
+    allow_short = _as_bool(value.get("allow_short", False), "CROSS_STATION.allow_short")
+    return CrossStationConfig(enable=enable, max_extend=raw_max, allow_short=allow_short)
 
 
 def _resolve_path(value: Any, base_dir: Path) -> Path:

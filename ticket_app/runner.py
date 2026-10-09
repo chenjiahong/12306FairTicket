@@ -5,6 +5,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional
 
 import requests
 
+from .cart import CartItem
 from .client import RailwayClient
 from .clock import ServerClock
 from .configuration import AppConfig, AppError, PreparedPassengerSet, ResponseFormatError, SEAT_SPECS, _elapsed_ms, _perf_log, _resolve_schedule_time
@@ -128,6 +129,8 @@ class TicketRunner:
         self._safe_checkpoint()
         self._phase("stations", "正在加载车站信息")
         self.stations.load(self.cancel_token, self.event_sink)
+        self._safe_checkpoint()
+        self._expand_cross_station()
         self._safe_checkpoint()
         self._resolve_query_routes()
         self._phase("login", "正在检查登录状态")
@@ -444,6 +447,72 @@ class TicketRunner:
         if hot_start <= now <= hot_end:
             return self.cfg.hot_query_interval_seconds
         return self.cfg.query_interval_seconds
+
+    def _expand_cross_station(self) -> None:
+        """Widen specific-train cart items to adjacent station pairs.
+
+        Uses the official czxx stop list to add buy-long (destination forward)
+        and, when opted in, buy-short (origin backward) alternatives so the
+        query loop can grab a longer/shorter segment when the direct one is
+        sold out.  Expansion happens once at startup, well before the hot
+        query window; any lookup failure skips the item instead of aborting.
+        """
+        xs = self.cfg.cross_station
+        if not xs.enable or xs.max_extend == 0:
+            return
+        self._phase("cross_station", "正在扩展跨站备选")
+        existing = {(item.from_station, item.to_station) for item in self.cfg.cart_items}
+        added = 0
+        for item in list(self.cfg.cart_items):
+            if item.train_scope != "specific" or not item.train_code:
+                continue
+            from_code = self.stations.code(item.from_station)
+            to_code = self.stations.code(item.to_station)
+            result = self.client.query_tickets_result(from_code, to_code)
+            if not result.success:
+                logging.warning("跨站扩展: %s → %s 查询失败，跳过 %s", item.from_station, item.to_station, item.train_code)
+                continue
+            full_code = next(
+                (ticket["train_no"] for ticket in result.tickets
+                 if ticket.get("station_train_code") == item.train_code),
+                None,
+            )
+            if not full_code:
+                logging.warning("跨站扩展: 余票结果中未找到车次 %s，跳过", item.train_code)
+                continue
+            stops = self.client.query_train_stops(full_code, from_code, to_code)
+            names = [stop["station_name"] for stop in stops]
+            if item.from_station not in names or item.to_station not in names:
+                logging.warning("跨站扩展: 经停站列表中未找到 %s/%s，跳过", item.from_station, item.to_station)
+                continue
+            from_idx = names.index(item.from_station)
+            to_idx = names.index(item.to_station)
+            candidates: List[tuple] = []
+            for offset in range(1, xs.max_extend + 1):
+                if to_idx + offset < len(names):
+                    candidates.append((item.from_station, names[to_idx + offset], "long"))
+            if xs.allow_short:
+                for offset in range(1, xs.max_extend + 1):
+                    if from_idx - offset >= 0:
+                        candidates.append((names[from_idx - offset], item.to_station, "short"))
+            for frm, to, direction in candidates:
+                if (frm, to) in existing:
+                    continue
+                self.cfg.cart_items.append(CartItem(
+                    from_station=frm, to_station=to,
+                    train_scope="specific", train_code=item.train_code,
+                    seat_type=item.seat_type,
+                ))
+                existing.add((frm, to))
+                added += 1
+                emit_event(
+                    self.event_sink, "cross_station_expanded",
+                    f"跨站扩展: {item.train_code} {frm} → {to}（{'买长' if direction == 'long' else '买短'}）",
+                    train=item.train_code, from_station=frm, to_station=to, direction=direction,
+                )
+            self._sleep(0.5)
+        if added:
+            logging.info("跨站扩展: 新增 %s 个备选站对", added)
 
     def _resolve_query_routes(self) -> None:
         if not self.cfg.cart_items:
