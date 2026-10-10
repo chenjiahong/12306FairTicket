@@ -64,7 +64,12 @@ class RailwayClient:
                 "Accept": "application/json, text/javascript, */*; q=0.01",
             }
         )
+        self._saved_cookie_snapshot: Optional[Dict[str, str]] = None
         self.load_cookies()
+        self._saved_cookie_snapshot = self._cookie_snapshot()
+
+    def _cookie_snapshot(self) -> Dict[str, str]:
+        return {cookie.name: cookie.value for cookie in self.session.cookies}
 
     def load_cookies(self) -> None:
         if not self.cfg.persist_session:
@@ -89,6 +94,17 @@ class RailwayClient:
         for cookie in self.session.cookies:
             jar.set_cookie(cookie)
         jar.save(ignore_discard=True, ignore_expires=True)
+        self._saved_cookie_snapshot = self._cookie_snapshot()
+
+    def maybe_save_cookies(self) -> None:
+        """Persist rotated session cookies (e.g. JSESSIONID refresh) after requests."""
+        if not self.cfg.persist_session:
+            return
+        snapshot = self._cookie_snapshot()
+        if snapshot == self._saved_cookie_snapshot:
+            return
+        self.save_cookies()
+        logging.info("登录会话 cookie 已更新并回写: %s", self.cfg.session_file)
 
     def check_session(self) -> bool:
         """Distinguish a confirmed expiry from a failed/ambiguous check."""
@@ -121,6 +137,7 @@ class RailwayClient:
             emit_event(self.event_sink, "session_checked", "检查失败，无法确认登录状态；请稍后重试",
                        state="failed", checked_at=time.time())
             raise AppError("检查登录状态失败，无法确认会话是否有效；请稍后重试") from None
+        self.maybe_save_cookies()
         emit_event(self.event_sink, "session_checked",
                    "检查时已登录" if valid else "未登录或登录已失效",
                    state="valid" if valid else "expired", checked_at=time.time())
@@ -332,6 +349,7 @@ class RailwayClient:
                     _elapsed_ms(parse_start),
                     len(tickets),
                 )
+                self.maybe_save_cookies()
                 return TicketQueryResult(True, tickets)
             except RunCancelled:
                 raise
@@ -542,6 +560,7 @@ class RailwayClient:
             data=data,
             timeout=self.cfg.request_timeout_seconds,
         )
+        self.maybe_save_cookies()
         payload = self._response_json_object(response, "submitOrderRequest")
         if not isinstance(payload.get("status"), bool):
             raise ResponseFormatError("submitOrderRequest 返回缺少 status 布尔字段，任务已停止")
