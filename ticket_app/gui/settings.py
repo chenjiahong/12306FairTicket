@@ -26,6 +26,9 @@ if _LOCAL_APPDATA:
 else:
     LOCAL_DATA_DIR = Path.home() / ".local" / "share" / "12306FairTicket"
 RUNTIME_DIR = LOCAL_DATA_DIR
+# Session cookies are shared with the CLI ticket-grab flow so a QR login in
+# either interface is reused by the other (repo .runtime/session.cookies).
+SHARED_SESSION_FILE = PROJECT_ROOT / ".runtime" / "session.cookies"
 GUI_CONFIG_VERSION = 5
 GUI_CONFIG_MAX_BYTES = 1_000_000
 STATION_CACHE_FILE = LOCAL_DATA_DIR / "stations.json"
@@ -230,8 +233,8 @@ def build_app_config(values: Mapping[str, Any], config_path: Optional[Path] = No
     """Build the current cart configuration without loading a Python file."""
 
     canonical = canonical_mapping(values)
-    canonical["persist_session"] = False
-    canonical["session_file"] = str(RUNTIME_DIR / "session.cookies")
+    canonical["persist_session"] = True
+    canonical["session_file"] = str(SHARED_SESSION_FILE)
     canonical["station_cache_file"] = str(RUNTIME_DIR / "stations.json")
     canonical["qr_code_file"] = str(RUNTIME_DIR / "login_qr.png")
     return AppConfig.from_mapping(canonical, config_path=(config_path or DEFAULT_CONFIG_FILE).resolve())

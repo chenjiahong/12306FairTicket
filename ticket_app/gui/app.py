@@ -49,6 +49,7 @@ from .settings import (
     DEFAULT_VALUES,
     LOCAL_DATA_DIR,
     PROJECT_ROOT,
+    SHARED_SESSION_FILE,
     STATION_CACHE_FILE,
     build_app_config,
     cached_station_names,
@@ -723,9 +724,9 @@ class MainWindow(CartFlow, WizardFlow, QMainWindow):
             "auto_submit": self.auto_submit.isChecked(),
             "seat_position_preferences": self.position_preferences.seats.positions(),
             "berth_preference": self.position_preferences.berths.values(),
-            "persist_session": False,
+            "persist_session": True,
             "purpose_codes": "ADULT",
-            "session_file": str(LOCAL_DATA_DIR / "session.cookies"),
+            "session_file": str(SHARED_SESSION_FILE),
             "station_cache_file": str(LOCAL_DATA_DIR / "stations.json"),
             "qr_code_file": str(LOCAL_DATA_DIR / "login_qr.png"),
         }
@@ -943,7 +944,8 @@ class MainWindow(CartFlow, WizardFlow, QMainWindow):
             "time_sync_samples", "time_sync_max_rtt_seconds",
         )
         values = {key: self.advanced[key].value() for key in keys}
-        values["persist_session"] = False
+        values["persist_session"] = True
+        values["session_file"] = str(SHARED_SESSION_FILE)
         return ConnectionConfig.from_mapping(values, base_dir=LOCAL_DATA_DIR)
 
     @preserve_reading_position

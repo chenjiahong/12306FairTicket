@@ -1,6 +1,6 @@
 ---
 name: ticket-grab
-description: 12306 抢票：用户说抢票/买票/高铁票/火车票时。生成配置、启动 12306FairTicket、二维码发飞书、结果通知。
+description: 12306 抢票与查余票：用户说抢票/买票/高铁票/火车票/查余票/查票/还有票吗时。查余票走纯 HTTP 免登录通道（curl_cffi 模拟 Chrome 指纹，CDP 真浏览器兜底）；抢票生成配置、启动 12306FairTicket、二维码发飞书、结果通知。
 ---
 
 # 12306 抢票（12306FairTicket）
@@ -23,6 +23,64 @@ description: 12306 抢票：用户说抢票/买票/高铁票/火车票时。生�
    - `kind=error`：播报错误内容，等用户指示。
    - `kind=finished`：停止轮询，按 `data.exit_code` 汇报：0=下单成功（提醒 30 分钟内去 12306 付款）；1=失败或到停止时间；130=用户中断。
 7. 用户要停止：`process kill` 对应 exec 会话，确认进程退出后汇报。
+
+## 浏览器登录态提取（免扫码）
+
+用户在 WSL Chrome（`~/.config/google-chrome`）登录 12306 后，可直接提取 cookie 写入会话文件，免扫码：
+
+```
+.venv/bin/python scripts/extract_browser_cookies.py [--domain 12306] [--port 9226]
+```
+
+原理：Chrome 磁盘 cookie 是加密的，直接解密不可靠。脚本复制 profile 到 /tmp 临时目录（跳过 Cache 类大目录和 Singleton 锁），用副本启动 headless Chrome 带 `--remote-debugging-port` + `--remote-allow-origins=*`（Chrome 148 缺此参数 WebSocket 握手 403），CDP `Network.getAllCookies` 读明文 cookie，按 Netscape 格式写 `.runtime/session.cookies`。仅标准库，无第三方依赖。
+
+注意：
+- Netscape 格式 domain 不以点开头时 domain-flag 必须写 `FALSE`，否则 `http.cookiejar` 加载报错
+- 提取后先 `check_session` 验证；flag=false 说明浏览器里的会话本身已失效（常见死因：12306 APP 登录同账号互踢），需用户重新登录后再提取
+- 浏览器会话寿命短（小时级），关键操作前都先验证
+
+## 查余票（免登录免扫码）
+
+用户只想查某日期某区间还有没有票、不用抢票时，用这条通道。无需登录、无需扫码，全程匿名会话。
+
+**首选：纯 HTTP（`scripts/query_http.py`，无需浏览器，秒级）**
+
+```
+.venv/bin/python scripts/query_http.py <日期YYYY-MM-DD> <出发站> <到达站> [--json] [--impersonate X]
+```
+
+例：`.venv/bin/python scripts/query_http.py 2026-10-27 珠海 潮汕` → 输出车次/区间/历时/各席别余票表格。站名支持中文（自动解析电报码，`.runtime/stations.json`）或电报码直传。
+
+原理（重要）：12306 WAF 按 **TLS/HTTP2 指纹**（JA3 + h2 SETTINGS）拦截，不卡身份、不弹 JS 挑战（真浏览器匿名查询全程无验证码）。Python `requests` 裸请求必死（指纹不对）；`curl_cffi impersonate="chrome"` 复刻 Chrome 指纹后两步走通：
+1. `GET leftTicket/init?linktypeid=dc&fs=名,码&ts=名,码&date=..&purpose_codes=ADULT` → 拿匿名会话 cookie（JSESSIONID + BIGipServer*）
+2. `GET leftTicket/queryG?leftTicketDTO.train_date=..&from_station=..&to_station=..&purpose_codes=ADULT`，同会话 + 站点原样头：`X-Requested-With: XMLHttpRequest`、`If-Modified-Since: 0`、`Cache-Control: no-cache`、`Accept: */*`、`Referer`=init URL（中文需百分号编码）
+
+`queryG` 返回 `data.result` 是管道符分隔字符串数组；字段下标→名称映射来自页面 `queryLeftTicket_end_js.js` 的 `cN` 函数（脚本内已固化）。席别字段：`swz`=商务座 `gg`=特等座 `zy`=一等座 `ze`=二等座 `tz`=二等包座 `gr`=高级软卧 `rw`=软卧 `yw`=硬卧 `rz`=软座 `yz`=硬座 `wz`=无座 `qt`=其他（拼音首字母+页面列位置双重验证）。`--`/空=该席别无票。
+
+被 WAF 拦时（init/queryG 非 JSON 或 error.html）：先 `--impersonate chrome124`（或 chrome120/safari 等）换指纹，或稍后重试；仍不行退回下面 CDP 版。
+
+**指纹失效风险（重要，长期维护必读）**
+
+指纹本身**不会随时间过期**——`impersonate` 是静态的 TLS/HTTP2 握手参数复刻，不是 cookie/token，无时效。失效只发生在 **12306 那边改规则**时，共三种触发方式：
+
+| 失效方式 | 说明 | 应对 |
+|---|---|---|
+| WAF 升级检测 | 从粗粒度 JA3 升级到更细的 JA4 / h2 帧序，静态复刻细节对不上 | 升级 curl_cffi（`.venv/bin/pip install -U curl_cffi`，默认 `chrome` 指纹会跟到新版 Chrome） |
+| 特定版本被点名 | WAF 规则专门屏蔽当前模拟的 Chrome 版本 | `--impersonate` 换版本（chrome124/chrome131/chrome146/chrome150/safari180/firefox147…，40+ 可选） |
+| 加 JS 行为挑战（最致命） | 12306 在匿名查询加 JS 验证码/JS 算 token，纯 HTTP 不执行 JS，指纹再对也没用 | **退回 CDP 真浏览器版**（能执行 JS、指纹永远真实最新） |
+
+实际风险评估：
+- 最可能的失效不是"指纹过期"而是"加 JS 挑战"；但 `queryG` 匿名接口历史上一直是纯指纹拦截（实测全程无验证码），给高频匿名查票加挑战伤正常用户，12306 短期大概率不加，风险低。
+- 指纹版本基本不用担心：Chrome TLS 握手参数跨版本变化小，WAF 更可能拦"不像 Chrome 的"而非"某个具体版本"；curl_cffi 升级后默认指纹自动变新。
+- **双保险结论**：纯 HTTP 为主 + CDP 真浏览器兜底，最坏情况（加 JS 挑战）也有退路，不会因指纹问题全灭。被拦时按上表手动切换，不做自动降级（保持行为可预期）。
+
+**兜底：CDP 真浏览器（`scripts/query_via_cdp.js`）**
+
+```
+NODE_PATH=/home/chenjiahong/node_modules node scripts/query_via_cdp.js <日期> <出发站> <到达站> [--port 9334] [--json]
+```
+
+若未来 WAF 加 JS 挑战导致纯 HTTP 失效，用这版：CDP 连真 Chrome（连不上自动拉起，持久 profile `C:\Users\KSO\AppData\Local\Temp\chrome-12306-query`，端口默认 9334）→ 导航 init 页 → 页面内用站点原样头 `fetch` queryG。依赖 `puppeteer-core`；Chrome 在 `C:\Program Files (x86)\Google\Chrome\Application\chrome.exe`。注意：页面自己的自动查询会被 WAF 挡（重试 10 次全失败），必须手动 fetch。
 
 ## 参考
 

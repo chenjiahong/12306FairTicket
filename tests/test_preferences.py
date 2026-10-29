@@ -225,7 +225,10 @@ class RailwayClientPreferenceTests(unittest.TestCase):
     @staticmethod
     def make_client(response):
         client = object.__new__(RailwayClient)
-        client.cfg = SimpleNamespace(request_timeout_seconds=5, purpose_codes="ADULT")
+        client.cfg = SimpleNamespace(
+            request_timeout_seconds=5, purpose_codes="ADULT",
+            persist_session=False, session_file=Path("unused"),
+        )
         client.session = Mock()
         client.session.post.return_value = response
         return client
