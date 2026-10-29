@@ -18,7 +18,7 @@ description: 12306 抢票与查余票：用户说抢票/买票/高铁票/火车�
 4. 向用户复述配置要点（日期/区间/车次/席别/乘车人/时间窗/是否自动下单），等用户明确确认后才启动。
 5. 后台启动：exec（background）`.venv/bin/python main.py --config <slug>.py --events-file .runtime/<slug>_events.jsonl`，记下 exec 会话 id。
 6. 轮询事件文件（每 15-30 秒，`read` 增量读 JSONL，按行处理）：
-   - `kind=qr_ready` 或 `qr_status` 且 `data.status=waiting`：用 `MEDIA:` 行发送 `.runtime/login_qr.png`，提示"用 12306 APP 扫码登录"；`data.uuid` 变化说明二维码刷新，重新发图。
+   - `kind=qr_ready` 或 `qr_status` 且 `data.status=waiting`：用 `MEDIA:` 行发送 `.runtime/login_qr.png`，提示"用 12306 APP 扫码登录"；`data.uuid` 变化说明二维码刷新，重新发图。**注意：登录二维码有效期只有 20 秒，看到 `qr_ready` 必须立刻发图，不能先做别的（查配置、发消息等），慢了用户扫了也白扫，只能等刷新重发。**
    - `kind=candidate`：播报票源（车次/席别/余票）。
    - `kind=error`：播报错误内容，等用户指示。
    - `kind=finished`：停止轮询，按 `data.exit_code` 汇报：0=下单成功（提醒 30 分钟内去 12306 付款）；1=失败或到停止时间；130=用户中断。
@@ -84,6 +84,7 @@ NODE_PATH=/home/chenjiahong/node_modules node scripts/query_via_cdp.js <日期> 
 
 ## 参考
 
+- **多段行程（中转）一次只能买一张**：12306 规定有未支付订单时不能下新单，所以多段必须"下单→付款→再下下一段"，不能一次下多段。下单顺序**路程长、难买的优先**（长距离车次余票少、先下先占；短途容易买，放后面即使前一段付款慢也来得及）。
 - 事件 JSONL 每行 `{time, kind, message, data}`；`qr_ready` 的 `data.image_bytes.b64` 是二维码 PNG 的 base64（备用，优先直接发 `login_qr.png` 文件）。
 - 跨站扩展：启动阶段对指定车次拉官方经停站（queryByTrainNo），自动生成买长（终点后移）备选，事件 `cross_station_expanded` 逐条播报新增站对，转发给用户；买短（起点前移）需 `allow_short=True`，越站乘车需补票、高铁有被要求下车风险，用户明确要求才开。
 - 登录会话存 `.runtime/session.cookies`，有效期内重启免扫码（事件 `session_checked.state=active`）。
