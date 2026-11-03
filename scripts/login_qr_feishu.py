@@ -41,6 +41,32 @@ def feishu_token() -> str:
     return p["tenant_access_token"]
 
 
+def start_keepalive(days: float = 7.0) -> None:
+    """拉起保活守护（先杀旧实例）。失败不影响登录结果。"""
+    import os
+    import signal
+    try:
+        old = subprocess.run(["pgrep", "-f", "session_keepalive_loop.py"],
+                             capture_output=True, text=True, timeout=10)
+        for pid in old.stdout.split():
+            try:
+                os.kill(int(pid), signal.SIGTERM)
+            except (ValueError, ProcessLookupError):
+                pass
+        time.sleep(0.5)
+        log_file = PROJECT_ROOT / ".runtime" / "keepalive.log"
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_file, "a") as log:
+            subprocess.Popen(
+                [sys.executable, str(PROJECT_ROOT / "scripts" / "session_keepalive_loop.py"),
+                 "--days", str(days)],
+                stdout=log, stderr=subprocess.STDOUT,
+                start_new_session=True, cwd=str(PROJECT_ROOT))
+        print(f"KEEPALIVE_STARTED days={days}", flush=True)
+    except Exception as e:
+        print(f"KEEPALIVE_START_FAIL: {e}", flush=True)
+
+
 def feishu_send_image(token: str, image_path: Path) -> None:
     with open(image_path, "rb") as f:
         r = requests.post(
@@ -147,6 +173,7 @@ def run(wait: float = 180.0) -> int:
         jar.set_cookie(cookie)
     jar.save(ignore_discard=True, ignore_expires=True)
     print(f"LOGIN_OK {username}", flush=True)
+    start_keepalive(7.0)
     return 0
 
 

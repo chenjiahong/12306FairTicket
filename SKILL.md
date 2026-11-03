@@ -39,6 +39,27 @@ description: 12306 抢票与查余票：用户说抢票/买票/高铁票/火车�
 - 提取后先 `check_session` 验证；flag=false 说明浏览器里的会话本身已失效（常见死因：12306 APP 登录同账号互踢），需用户重新登录后再提取
 - 浏览器会话寿命短（小时级），关键操作前都先验证
 
+## 扫码登录脚本（会话过期时用）
+
+会话失效（`checkUser` flag=false）时重新登录，不用走 GUI 流程：
+
+```
+.venv/bin/python scripts/login_qr_feishu.py [--wait 180]   # 二维码经飞书 API 直接发到用户对话
+.venv/bin/python scripts/login_qr_flow.py [--wait 120]     # 二维码存本地 .runtime/login_qr.png，手动发
+```
+
+流程：create-qr64 → 发图 → 轮询 checkqr → 登录 → 回写 `.runtime/session.cookies` → **自动拉起 7 天保活守护**。
+
+关键点：
+- checkqr 状态 `0`=未扫 `1`=已扫未确认 `2`=已确认 `3`=过期。**必须等到 2 才能调 uamtk**，状态 1 时调会报"用户未登录"（用户扫完要在 APP 里点"确认登录"）
+- 二维码 20 秒过期；生成后必须立刻发图
+- 飞书凭证：appId 从 `~/.openclaw/openclaw.json` 的 `channels.feishu.appId` 读，appSecret 从环境变量 `FEISHU_APP_SECRET` 读（配置里是占位符，直接读配置会 `app secret invalid`）
+
+**保活机制（默认无 cron，绑定登录动作）**：
+- 登录成功后自动拉起 `scripts/session_keepalive_loop.py`（先杀旧实例）：每 45s checkUser + 回写轮换 cookie，保活 7 天；会话被踢（flag=false）时飞书文字通知。日志 `.runtime/keepalive.log`。手动跑：`.venv/bin/python scripts/session_keepalive_loop.py --days 7`
+- `scripts/session_keepalive.py`：手动检查工具。会话有效→静默退出；失效→自动飞书发码重登；需要时再跑，不挂 cron
+- 注意：保活守护与 GUI/CLI 共享 session 文件，文件 mtime 变化时守护会自动同步 cookie，避免旧 JSESSIONID 误判失效
+
 ## 查余票（免登录免扫码）
 
 用户只想查某日期某区间还有没有票、不用抢票时，用这条通道。无需登录、无需扫码，全程匿名会话。
@@ -87,7 +108,7 @@ NODE_PATH=/home/chenjiahong/node_modules node scripts/query_via_cdp.js <日期> 
 - **多段行程（中转）一次只能买一张**：12306 规定有未支付订单时不能下新单，所以多段必须"下单→付款→再下下一段"，不能一次下多段。下单顺序**路程长、难买的优先**（长距离车次余票少、先下先占；短途容易买，放后面即使前一段付款慢也来得及）。
 - 事件 JSONL 每行 `{time, kind, message, data}`；`qr_ready` 的 `data.image_bytes.b64` 是二维码 PNG 的 base64（备用，优先直接发 `login_qr.png` 文件）。
 - 跨站扩展：启动阶段对指定车次拉官方经停站（queryByTrainNo），自动生成买长（终点后移）备选，事件 `cross_station_expanded` 逐条播报新增站对，转发给用户；买短（起点前移）需 `allow_short=True`，越站乘车需补票、高铁有被要求下车风险，用户明确要求才开。
-- 登录会话存 `.runtime/session.cookies`，有效期内重启免扫码（事件 `session_checked.state=active`）。
+- 登录会话存 `.runtime/session.cookies`，有效期内重启免扫码（事件 `session_checked.state=active`）。脚本登录成功后自动保活 7 天（见"扫码登录脚本"节）；自然寿命（无请求）约 3-5 天，同账号别处登录立即互踢。
 - 相对路径均相对仓库根目录；`.runtime/` 已被 gitignore。
 - 开售时间不准会白跑：不确定时让用户查 12306 公告，或 `--start-at` 留空立即开始查票。
 - 席别白名单：商务座/特等座/一等座/二等座/高级软卧/软卧/硬卧/一等卧/二等卧/软座/硬座/无座。

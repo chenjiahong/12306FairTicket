@@ -14,6 +14,7 @@
 """
 import argparse
 import base64
+import subprocess
 import sys
 import time
 from http.cookiejar import MozillaCookieJar
@@ -25,6 +26,32 @@ BASE_URL = "https://kyfw.12306.cn"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 QR_FILE = PROJECT_ROOT / ".runtime" / "login_qr.png"
 SESSION_FILE = PROJECT_ROOT / ".runtime" / "session.cookies"
+
+
+def start_keepalive(days: float = 7.0) -> None:
+    """拉起保活守护（先杀旧实例）。失败不影响登录结果。"""
+    import os
+    import signal
+    try:
+        old = subprocess.run(["pgrep", "-f", "session_keepalive_loop.py"],
+                             capture_output=True, text=True, timeout=10)
+        for pid in old.stdout.split():
+            try:
+                os.kill(int(pid), signal.SIGTERM)
+            except (ValueError, ProcessLookupError):
+                pass
+        time.sleep(0.5)
+        log_file = PROJECT_ROOT / ".runtime" / "keepalive.log"
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_file, "a") as log:
+            subprocess.Popen(
+                [sys.executable, str(PROJECT_ROOT / "scripts" / "session_keepalive_loop.py"),
+                 "--days", str(days)],
+                stdout=log, stderr=subprocess.STDOUT,
+                start_new_session=True, cwd=str(PROJECT_ROOT))
+        print(f"KEEPALIVE_STARTED days={days}", flush=True)
+    except Exception as e:
+        print(f"KEEPALIVE_START_FAIL: {e}", flush=True)
 
 
 def main() -> int:
@@ -56,24 +83,25 @@ def main() -> int:
     QR_FILE.write_bytes(image)
     print(f"QR_READY {uuid}", flush=True)
 
-    # 2. 轮询扫码状态（12306: 0=未扫 1=已扫 2=已确认 4=过期）
+    # 2. 轮询扫码状态（12306: 0=未扫 1=已扫未确认 2=已确认 3=过期）
+    #    必须等到 2（手机端确认）才能 uamtk，1 时调会报“用户未登录”
     deadline = time.time() + args.wait
-    scanned = False
     while time.time() < deadline:
         r = s.post(f"{BASE_URL}/passport/web/checkqr", data={"uuid": uuid, "appid": "otn"}, timeout=15)
         p = r.json()
         code = str(p.get("result_code", ""))
-        if code in ("1", "2"):
-            scanned = True
+        if code == "1":
+            print("SCANNED 等待手机端确认...", flush=True)
+        elif code == "2":
+            print("CONFIRMED", flush=True)
             break
-        if code == "4":
+        elif code == "3":
             print("QR_EXPIRED", flush=True)
             return 2
         time.sleep(1)
-    if not scanned:
+    else:
         print("NOT_SCANNED", flush=True)
         return 3
-    print("SCANNED", flush=True)
 
     # 3. 完成登录
     r = s.post(f"{BASE_URL}/passport/web/auth/uamtk", data={"appid": "otn"}, timeout=15)
@@ -107,6 +135,7 @@ def main() -> int:
         jar.set_cookie(cookie)
     jar.save(ignore_discard=True, ignore_expires=True)
     print(f"LOGIN_OK {username}", flush=True)
+    start_keepalive(7.0)
     return 0
 
 
