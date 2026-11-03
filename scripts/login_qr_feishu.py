@@ -5,6 +5,7 @@
   FEISHU_SENT   图片已通过飞书发送
   LOGIN_OK <username> / QR_EXPIRED / NOT_SCANNED / FAIL:<msg>
 """
+import argparse
 import base64
 import json
 import subprocess
@@ -61,7 +62,7 @@ def feishu_send_image(token: str, image_path: Path) -> None:
         raise RuntimeError(f"发送图片失败: {p}")
 
 
-def main() -> int:
+def run(wait: float = 180.0) -> int:
     s = requests.Session()
     s.headers.update({
         "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -99,7 +100,7 @@ def main() -> int:
 
     # 3. 轮询扫码（12306: 0=未扫 1=已扫未确认 2=已确认 3=过期）
     #    必须等到 2（手机端确认）才能 uamtk，1 时调会报“用户未登录”
-    deadline = time.time() + 180
+    deadline = time.time() + wait
     while time.time() < deadline:
         r = s.post(f"{BASE_URL}/passport/web/checkqr", data={"uuid": uuid, "appid": "otn"}, timeout=15)
         p = r.json()
@@ -147,6 +148,13 @@ def main() -> int:
     jar.save(ignore_discard=True, ignore_expires=True)
     print(f"LOGIN_OK {username}", flush=True)
     return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="12306 扫码登录（飞书发图版）")
+    parser.add_argument("--wait", type=float, default=180.0, help="等待扫码最长秒数（默认 180）")
+    args = parser.parse_args()
+    return run(args.wait)
 
 
 if __name__ == "__main__":
