@@ -56,7 +56,8 @@ description: 12306 抢票与查余票：用户说抢票/买票/高铁票/火车�
 - 飞书凭证：appId 从 `~/.openclaw/openclaw.json` 的 `channels.feishu.appId` 读，appSecret 从环境变量 `FEISHU_APP_SECRET` 读（配置里是占位符，直接读配置会 `app secret invalid`）
 
 **保活机制（默认无 cron，绑定登录动作）**：
-- 登录成功后自动拉起 `scripts/session_keepalive_loop.py`（先杀旧实例）：每 45s checkUser + 回写轮换 cookie，保活 7 天；会话被踢（flag=false）时飞书文字通知。日志 `.runtime/keepalive.log`。手动跑：`.venv/bin/python scripts/session_keepalive_loop.py --days 7`
+- 登录成功后自动拉起 `scripts/session_keepalive_loop.py`（先杀旧实例）：每 45s checkUser + 回写轮换 cookie，保活 7 天；会话被踢（flag=false）时飞书文字通知。日志 `.runtime/keepalive.log`。手动跑：`setsid nohup .venv/bin/python scripts/session_keepalive_loop.py --days 7 >> .runtime/keepalive.log 2>&1 &`
+- **坑（2026-11-05 实测）：从 OpenClaw exec 会话手动拉起保活必须用 `setsid nohup ... &`**。只写 `nohup ... &` 的话，保活是那个 exec 会话的子进程，OpenClaw 回收 exec 会话时会杀掉整个进程组，保活被静默杀掉（无 traceback、无退出日志、进程直接消失），会话随后裸放被 12306 空闲清理。`setsid` 让进程脱离 exec 会话的进程组，exec 会话回收不影响它。
 - `scripts/session_keepalive.py`：手动检查工具。会话有效→静默退出；失效→自动飞书发码重登；需要时再跑，不挂 cron
 - 注意：保活守护与 GUI/CLI 共享 session 文件，文件 mtime 变化时守护会自动同步 cookie，避免旧 JSESSIONID 误判失效
 

@@ -96,15 +96,42 @@ class RailwayClient:
         jar.save(ignore_discard=True, ignore_expires=True)
         self._saved_cookie_snapshot = self._cookie_snapshot()
 
-    def maybe_save_cookies(self) -> None:
-        """Persist rotated session cookies (e.g. JSESSIONID refresh) after requests."""
+    def maybe_save_cookies(self, response: Any = None) -> None:
+        """Persist rotated session cookies (e.g. JSESSIONID refresh) after requests.
+
+        If `response` is a login-page redirect, skip the save: such responses
+        carry anonymous cookies that would clobber the real login session in the
+        shared cookie file.
+        """
         if not self.cfg.persist_session:
+            return
+        if response is not None and self._response_indicates_login_redirect(response):
+            logging.warning("响应为登录页重定向，跳过 cookie 回写以免覆盖有效会话: %s",
+                            self.cfg.session_file)
             return
         snapshot = self._cookie_snapshot()
         if snapshot == self._saved_cookie_snapshot:
             return
         self.save_cookies()
         logging.info("登录会话 cookie 已更新并回写: %s", self.cfg.session_file)
+
+    @staticmethod
+    def _response_indicates_login_redirect(response: Any) -> bool:
+        """True if the response is a login-page redirect (session invalidated)."""
+        content = getattr(response, "content", None)
+        if isinstance(content, bytes):
+            prefix = content.lstrip()[:32].lower()
+            if prefix.startswith((b"<!doctype html", b"<html")):
+                return True
+        raw_url = getattr(response, "url", "")
+        if isinstance(raw_url, str):
+            try:
+                path = urllib.parse.urlsplit(raw_url).path
+            except ValueError:
+                path = ""
+            if "/login/" in path or path.rstrip("/").endswith("login"):
+                return True
+        return False
 
     def check_session(self) -> bool:
         """Distinguish a confirmed expiry from a failed/ambiguous check."""
@@ -137,7 +164,7 @@ class RailwayClient:
             emit_event(self.event_sink, "session_checked", "检查失败，无法确认登录状态；请稍后重试",
                        state="failed", checked_at=time.time())
             raise AppError("检查登录状态失败，无法确认会话是否有效；请稍后重试") from None
-        self.maybe_save_cookies()
+        self.maybe_save_cookies(response)
         emit_event(self.event_sink, "session_checked",
                    "检查时已登录" if valid else "未登录或登录已失效",
                    state="valid" if valid else "expired", checked_at=time.time())
@@ -349,7 +376,7 @@ class RailwayClient:
                     _elapsed_ms(parse_start),
                     len(tickets),
                 )
-                self.maybe_save_cookies()
+                self.maybe_save_cookies(response)
                 return TicketQueryResult(True, tickets)
             except RunCancelled:
                 raise
@@ -560,7 +587,7 @@ class RailwayClient:
             data=data,
             timeout=self.cfg.request_timeout_seconds,
         )
-        self.maybe_save_cookies()
+        self.maybe_save_cookies(response)
         payload = self._response_json_object(response, "submitOrderRequest")
         if not isinstance(payload.get("status"), bool):
             raise ResponseFormatError("submitOrderRequest 返回缺少 status 布尔字段，任务已停止")
