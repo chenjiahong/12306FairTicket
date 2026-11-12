@@ -26,6 +26,11 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
       "Chrome/120.0.0.0 Safari/537.36")
 
 
+def log(msg: str) -> None:
+    """Print a log line prefixed with a local timestamp (Asia/Shanghai)."""
+    print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}", flush=True)
+
+
 def snapshot(s: requests.Session):
     return {c.name: c.value for c in s.cookies}
 
@@ -60,9 +65,9 @@ def sync_from_file(s: requests.Session, state: dict) -> None:
         s.cookies.clear()
         s.cookies.update(jar)
         state["mtime"] = mtime
-        print("SYNCED_FROM_FILE", flush=True)
+        log("SYNCED_FROM_FILE")
     except Exception as e:
-        print(f"SYNC_FAIL: {e}", flush=True)
+        log(f"SYNC_FAIL: {e}")
 
 
 def notify_feishu(text: str) -> None:
@@ -79,9 +84,9 @@ def notify_feishu(text: str) -> None:
             timeout=15)
         p = r.json()
         if p.get("code") != 0:
-            print(f"NOTIFY_FAIL: {p}", flush=True)
+            log(f"NOTIFY_FAIL: {p}")
     except Exception as e:
-        print(f"NOTIFY_FAIL: {e}", flush=True)
+        log(f"NOTIFY_FAIL: {e}")
 
 
 def main() -> int:
@@ -94,7 +99,7 @@ def main() -> int:
     state = {"mtime": None}
     end = time.time() + args.days * 86400
     last_snap = snapshot(s)
-    print(f"KEEPALIVE_START days={args.days} interval={args.interval}", flush=True)
+    log(f"KEEPALIVE_START days={args.days} interval={args.interval}")
 
     while time.time() < end:
         time.sleep(args.interval)
@@ -104,10 +109,10 @@ def main() -> int:
             p = r.json()
             flag = (p.get("data") or {}).get("flag")
         except Exception as e:
-            print(f"CHECK_ERROR: {e}", flush=True)
+            log(f"CHECK_ERROR: {e}")
             continue
         if flag is not True:
-            print("SESSION_DEAD", flush=True)
+            log("SESSION_DEAD")
             notify_feishu("12306 会话保活：会话已失效（可能被同账号别处登录互踢），请重新扫码: "
                           "cd ~/code/12306FairTicket && python3 scripts/login_qr_feishu.py")
             return 2
@@ -115,9 +120,9 @@ def main() -> int:
         if snap != last_snap:
             save_session(s)
             last_snap = snap
-            print("COOKIES_ROTATED", flush=True)
+            log("COOKIES_ROTATED")
 
-    print("KEEPALIVE_DONE", flush=True)
+    log("KEEPALIVE_DONE")
     return 0
 
 
