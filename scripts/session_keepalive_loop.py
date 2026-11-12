@@ -10,6 +10,7 @@
 """
 import argparse
 import json
+import random
 import sys
 import time
 from http.cookiejar import MozillaCookieJar
@@ -92,17 +93,18 @@ def notify_feishu(text: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="12306 会话保活守护")
     parser.add_argument("--days", type=float, default=7.0, help="保活天数（默认 7）")
-    parser.add_argument("--interval", type=float, default=45.0, help="checkUser 间隔秒（默认 45）")
+    parser.add_argument("--interval", type=float, default=90.0,
+                        help="checkUser 基准间隔秒（默认 90，实际在 0.7x~1.3x 随机抖动，降低风控特征）")
     args = parser.parse_args()
 
     s = load_session()
     state = {"mtime": None}
     end = time.time() + args.days * 86400
     last_snap = snapshot(s)
-    log(f"KEEPALIVE_START days={args.days} interval={args.interval}")
+    log(f"KEEPALIVE_START days={args.days} interval={args.interval} (jitter 0.7x~1.3x)")
 
     while time.time() < end:
-        time.sleep(args.interval)
+        time.sleep(random.uniform(args.interval * 0.7, args.interval * 1.3))
         sync_from_file(s, state)
         try:
             r = s.post(f"{BASE_URL}/otn/login/checkUser", data={"_json_att": ""}, timeout=15)
